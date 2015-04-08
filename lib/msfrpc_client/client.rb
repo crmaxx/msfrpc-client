@@ -1,6 +1,7 @@
 require 'msgpack'
 require 'rex'
 require 'rex/proto/http'
+require 'resolve/hostname'
 require 'msfrpc_client/constants'
 
 module Msf
@@ -8,7 +9,7 @@ module Msf
     class Client
       attr_accessor :username, :password, :token, :client
 
-      ALLOWED_CODE = [200, 401, 403, 500]
+      ALLOWED_CODES = [200, 401, 403, 500]
 
       def initialize(config = {})
         @username = config[:username]
@@ -16,6 +17,7 @@ module Msf
         @token = config[:token]
 
         host = config.fetch(:host) { '127.0.0.1' }
+        host = getaddress(host)
         port = config.fetch(:port) { 55_553 }
         ssl = config.fetch(:ssl) { false }
         ssl_version = config.fetch(:ssl) { 'TLS1' }
@@ -47,12 +49,18 @@ module Msf
 
       private
 
+      def getaddress(name)
+        resolver = Resolve::Hostname.new(raise_notfound: false)
+        ip = resolver.getaddress(name)
+        ip.nil? ? '127.0.0.1' : ip
+      end
+
       def execute(method, opts = {})
         data = client_data(method, opts)
         request = client_request(data)
         response = @client.send_recv(request)
 
-        if response && ALLOWED_CODE.include?(response.code)
+        if response && ALLOWED_CODES.include?(response.code)
           unpacked_response = MessagePack.unpack(response.body)
 
           if unpacked_response && unpacked_response.is_a?(::Hash) && unpacked_response['error'] == true

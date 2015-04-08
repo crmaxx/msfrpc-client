@@ -28,4 +28,5 @@ Gem::Specification.new do |s|
 
   s.add_runtime_dependency 'msgpack', '~> 0.5.8', '>= 0.5.8'
   s.add_runtime_dependency 'librex', '~> 0.0.70', '>= 0.0.70'
+  s.add_runtime_dependency 'resolve-hostname', '~> 0.0.4'
 end
