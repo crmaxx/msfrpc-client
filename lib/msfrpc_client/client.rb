@@ -6,70 +6,77 @@ require 'msfrpc_client/constants'
 module Msf
   module RPC
     class Client
-      attr_accessor :token, :info
+      attr_accessor :username, :password, :token, :client
+
+      ALLOWED_CODE = [200, 401, 403, 500]
 
       def initialize(config = {})
-        self.info = {
-          host: '127.0.0.1',
-          port: 55_553,
-          uri:  "/api/#{Msf::RPC::API_VERSION}",
-          ssl:  false,
-          ssl_version: 'TLS1',
-          context: {}
-        }.merge(config)
+        @username = config[:username]
+        @password = config[:password]
+        @token = config[:token]
 
-        self.token = info[:token]
+        host = config.fetch(:host) { '127.0.0.1' }
+        port = config.fetch(:port) { 55_553 }
+        ssl = config.fetch(:ssl) { false }
+        ssl_version = config.fetch(:ssl) { 'TLS1' }
+        context = config.fetch(:context, {})
 
-        login(info[:user], info[:pass]) unless token || info[:user] || info[:pass]
+        @uri = config.fetch(:uri) { "/api/#{Msf::RPC::API_VERSION}" }
+
+        @client = Rex::Proto::Http::Client.new(host, port, context, ssl, ssl_version)
+        @client.set_config(
+          vhost: host,
+          agent: "Metasploit Pro RPC Client/#{API_VERSION}",
+          read_max_data: (1024 * 1024 * 512)
+        )
+
+        login(@username, @password) if @token.blank? || @username || @password
       end
 
       def login(user, pass)
-        res = call("auth.login", user, pass)
-        fail "authentication failed" unless res || res['result'] == "success"
-        self.token = res['token']
+        response = execute("auth.login", user: user, password: pass)
+        fail "authentication failed" unless response || response['result'] == "success"
+        @token = response['token']
         true
       end
 
-      def call(meth, *args)
-        if meth != "auth.login"
-          fail "client not authenticated" unless token
-          args.unshift(token)
-        end
+      def call(method, opts = {})
+        fail "client not authenticated" if @token.blank? && method != "auth.login"
+        execute(method, opts)
+      end
 
-        args.unshift(meth)
+      private
 
-        unless @cli
-          @cli = Rex::Proto::Http::Client.new(info[:host], info[:port], info[:context], info[:ssl], info[:ssl_version])
-          @cli.set_config(
-            vhost: info[:host],
-            agent: "Metasploit Pro RPC Client/#{API_VERSION}",
-            read_max_data: (1024 * 1024 * 512)
-          )
-        end
+      def execute(method, opts = {})
+        data = client_data(method, opts)
+        request = client_request(data)
+        response = @client.send_recv(request)
 
-        req = @cli.request_cgi(
-          'method' => 'POST',
-          'uri'    => info[:uri],
-          'ctype'  => 'binary/message-pack',
-          'data'   => args.to_msgpack
-        )
+        if response && ALLOWED_CODE.include?(response.code)
+          unpacked_response = MessagePack.unpack(response.body)
 
-        res = @cli.send_recv(req)
-
-        if res && [200, 401, 403, 500].include?(res.code)
-          resp = MessagePack.unpack(res.body)
-
-          if resp && resp.is_a?(::Hash) && resp['error'] == true
-            fail Msf::RPC::ServerException.new(res.code,
-                                               resp['error_message'] || resp['error_string'],
-                                               resp['error_class'],
-                                               resp['error_backtrace'])
+          if unpacked_response && unpacked_response.is_a?(::Hash) && unpacked_response['error'] == true
+            fail Msf::RPC::ServerException.new(response.code,
+                                               unpacked_response['error_message'] || unpacked_response['error_string'],
+                                               unpacked_response['error_class'],
+                                               unpacked_response['error_backtrace'])
           end
 
-          return resp
+          unpacked_response
         else
-          fail res.inspect
+          fail response.inspect
         end
+      end
+
+      def client_data(method, opts = {})
+        [method, opts.values].flatten.to_msgpack
+      end
+
+      def client_request(data)
+        @client.request_cgi('method' => 'POST',
+                            'uri'    => @uri,
+                            'ctype'  => 'binary/message-pack',
+                            'data'   => data)
       end
     end
   end
